@@ -4,19 +4,7 @@ from OpenGL.GL import *
 from OpenGL.GLU import *
 import math
 import serial
-
-def read_serial():
-    global yaw, pitch, roll
-    try:
-        if ser.in_waiting > 0:
-            data = ser.readline().decode('utf-8').strip()
-            values = data.split('/')
-            if len(values) == 3:
-                yaw = float(values[0])
-                pitch = float(values[1])
-                roll = float(values[2])
-    except Exception as e:
-        print(f"Erro na leitura da porta serial: {e}")
+import collections
 
 # Configuração da porta serial
 try:
@@ -25,22 +13,38 @@ except Exception as e:
     print(f"Erro ao abrir a porta serial: {e}")
     ser = None
 
-# Variáveis de controle do avião
-yaw = 0.0
-pitch = 0.0
-roll = 0.0
+# Fila para o filtro de média móvel
+window_size = 5
+yaw_buffer = collections.deque([0.0] * window_size, maxlen=window_size)
+pitch_buffer = collections.deque([0.0] * window_size, maxlen=window_size)
+roll_buffer = collections.deque([0.0] * window_size, maxlen=window_size)
+yaw2_buffer = collections.deque([0.0] * window_size, maxlen=window_size)
+pitch2_buffer = collections.deque([0.0] * window_size, maxlen=window_size)
+roll2_buffer = collections.deque([0.0] * window_size, maxlen=window_size)
 
-# Parâmetros da câmera
-cam_angle_x = 45.0
-cam_angle_y = 20.0
-cam_distance = 20.0
-mouse_sensitivity = 0.2
+def read_serial():
+    try:
+        if ser and ser.in_waiting > 0:
+            data = ser.readline().decode('utf-8').strip()
+            values = data.split('/')
+            if len(values) == 6:
+                yaw_buffer.append(float(values[0]))
+                pitch_buffer.append(float(values[1]))
+                roll_buffer.append(float(values[2]))
+                yaw2_buffer.append(float(values[3]))
+                pitch2_buffer.append(float(values[4]))
+                roll2_buffer.append(float(values[5]))
+    except Exception as e:
+        print(f"Erro na leitura da porta serial: {e}")
+
+def get_filtered_value(buffer):
+    return sum(buffer) / len(buffer)
 
 def init_gl():
     glClearColor(0.5, 0.7, 1.0, 1.0)
     glEnable(GL_DEPTH_TEST)
 
-def draw_airplane():
+def draw_paper_plane():
     glBegin(GL_QUADS)
       # Frente
     glColor3f(0.0, 0.0, 1.0)
@@ -79,34 +83,27 @@ def draw_airplane():
     glVertex3f(-0.5, -0.1, 1.0)
     glVertex3f( 0.5, -0.1, 1.0)
     glEnd()
-    
-def draw_airplane_instance(x, y, z):
+
+def draw_airplane_instance(x, y, z, yaw, pitch, roll):
     glPushMatrix()
     glTranslatef(x, y, z)
     glRotatef(yaw, 0, 1, 0)
     glRotatef(pitch, 1, 0, 0)
     glRotatef(roll, 0, 0, 1)
-    draw_airplane()
+    draw_paper_plane()
     glPopMatrix()
 
 def update_camera():
-    rad_x = math.radians(cam_angle_x)
-    rad_y = math.radians(cam_angle_y)
-    cam_x = cam_distance * math.cos(rad_y) * math.sin(rad_x)
-    cam_y = cam_distance * math.sin(rad_y)
-    cam_z = cam_distance * math.cos(rad_y) * math.cos(rad_x)
     glLoadIdentity()
-    gluLookAt(cam_x, cam_y, cam_z,  0, 0, 0,  0, 1, 0)
+    gluLookAt(6, 4, 10,  0, 0, 0,  0, 1, 0)
 
 def main():
-    global cam_angle_x, cam_angle_y
     pygame.init()
     display = (800, 600)
     pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
-    pygame.display.set_caption("8 Aviões em 3D com Controle Serial")
+    pygame.display.set_caption("Simulação de Aviões de Papel com MPU6050")
     
     init_gl()
-    
     glMatrixMode(GL_PROJECTION)
     glLoadIdentity()
     gluPerspective(45, (display[0] / display[1]), 0.1, 100.0)
@@ -114,10 +111,6 @@ def main():
     
     clock = pygame.time.Clock()
     running = True
-    left_button_down = False
-    
-    airplane_positions = [(-6, 2, 0), (-2, 2, 0), (2, 2, 0), (6, 2, 0),
-                          (-6, -2, 0), (-2, -2, 0), (2, -2, 0), (6, -2, 0)]
     
     while running:
         dt = clock.tick(60) / 1000.0
@@ -126,21 +119,19 @@ def main():
         for event in pygame.event.get():
             if event.type == QUIT:
                 running = False
-            elif event.type == MOUSEBUTTONDOWN and event.button == 1:
-                left_button_down = True
-            elif event.type == MOUSEBUTTONUP and event.button == 1:
-                left_button_down = False
-            elif event.type == MOUSEMOTION and left_button_down:
-                dx, dy = event.rel
-                cam_angle_x += dx * mouse_sensitivity
-                cam_angle_y += dy * mouse_sensitivity
-                cam_angle_y = max(-89, min(89, cam_angle_y))
+        
+        yaw1 = get_filtered_value(yaw_buffer)
+        pitch1 = get_filtered_value(pitch_buffer)
+        roll1 = get_filtered_value(roll_buffer)
+        yaw2 = get_filtered_value(yaw2_buffer)
+        pitch2 = get_filtered_value(pitch2_buffer)
+        roll2 = get_filtered_value(roll2_buffer)
         
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         update_camera()
         
-        for pos in airplane_positions:
-            draw_airplane_instance(*pos)
+        draw_airplane_instance(-2, 0, 0, yaw1, pitch1, roll1)
+        draw_airplane_instance(2, 0, 0, yaw2, pitch2, roll2)
         
         pygame.display.flip()
     
