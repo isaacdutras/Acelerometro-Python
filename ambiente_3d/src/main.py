@@ -5,6 +5,7 @@ from OpenGL.GLU import *
 import math
 import serial
 import collections
+import numpy as np
 
 # Configuração da porta serial
 try:
@@ -13,32 +14,35 @@ except Exception as e:
     print(f"Erro ao abrir a porta serial: {e}")
     ser = None
 
-# Fila para o filtro de média móvel
-window_size = 5
-yaw_buffer = collections.deque([0.0] * window_size, maxlen=window_size)
-pitch_buffer = collections.deque([0.0] * window_size, maxlen=window_size)
-roll_buffer = collections.deque([0.0] * window_size, maxlen=window_size)
-yaw2_buffer = collections.deque([0.0] * window_size, maxlen=window_size)
-pitch2_buffer = collections.deque([0.0] * window_size, maxlen=window_size)
-roll2_buffer = collections.deque([0.0] * window_size, maxlen=window_size)
+# Configuração do Filtro de Kalman
+class KalmanFilter:
+    def __init__(self, process_variance=1e-5, measurement_variance=0.1):
+        self.estimate = 0.0
+        self.error_estimate = 1.0
+        self.process_variance = process_variance
+        self.measurement_variance = measurement_variance
+    
+    def update(self, measurement):
+        self.error_estimate += self.process_variance
+        kalman_gain = self.error_estimate / (self.error_estimate + self.measurement_variance)
+        self.estimate += kalman_gain * (measurement - self.estimate)
+        self.error_estimate *= (1 - kalman_gain)
+        return self.estimate
+
+# Criando filtros para cada eixo de cada MPU
+num_mpus = 4
+filters = [[KalmanFilter() for _ in range(3)] for _ in range(num_mpus)]
 
 def read_serial():
     try:
         if ser and ser.in_waiting > 0:
             data = ser.readline().decode('utf-8').strip()
             values = data.split('/')
-            if len(values) == 6:
-                yaw_buffer.append(float(values[0]))
-                pitch_buffer.append(float(values[1]))
-                roll_buffer.append(float(values[2]))
-                yaw2_buffer.append(float(values[3]))
-                pitch2_buffer.append(float(values[4]))
-                roll2_buffer.append(float(values[5]))
+            if len(values) == num_mpus * 3:
+                return [float(v) for v in values]
     except Exception as e:
         print(f"Erro na leitura da porta serial: {e}")
-
-def get_filtered_value(buffer):
-    return sum(buffer) / len(buffer)
+    return [0.0] * (num_mpus * 3)
 
 def init_gl():
     glClearColor(0.5, 0.7, 1.0, 1.0)
@@ -46,7 +50,6 @@ def init_gl():
 
 def draw_paper_plane():
     glBegin(GL_QUADS)
-      # Frente
     glColor3f(0.0, 0.0, 1.0)
     glVertex3f( 0.5,  0.1, -1.0)
     glVertex3f(-0.5,  0.1, -1.0)
@@ -95,7 +98,7 @@ def draw_airplane_instance(x, y, z, yaw, pitch, roll):
 
 def update_camera():
     glLoadIdentity()
-    gluLookAt(6, 4, 10,  0, 0, 0,  0, 1, 0)
+    gluLookAt(6, 4, 10, 0, 0, 0, 0, 1, 0)
 
 def main():
     pygame.init()
@@ -111,27 +114,28 @@ def main():
     
     clock = pygame.time.Clock()
     running = True
+    positions = [(-3, 0, 0), (-1, 0, 0), (1, 0, 0), (3, 0, 0)]
     
     while running:
         dt = clock.tick(60) / 1000.0
-        read_serial()
+        raw_values = read_serial()
         
         for event in pygame.event.get():
             if event.type == QUIT:
                 running = False
         
-        yaw1 = get_filtered_value(yaw_buffer)
-        pitch1 = get_filtered_value(pitch_buffer)
-        roll1 = get_filtered_value(roll_buffer)
-        yaw2 = get_filtered_value(yaw2_buffer)
-        pitch2 = get_filtered_value(pitch2_buffer)
-        roll2 = get_filtered_value(roll2_buffer)
+        filtered_values = []
+        for i in range(num_mpus):
+            yaw = filters[i][0].update(raw_values[i * 3])
+            pitch = filters[i][1].update(raw_values[i * 3 + 1])
+            roll = filters[i][2].update(raw_values[i * 3 + 2])
+            filtered_values.append((yaw, pitch, roll))
         
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         update_camera()
         
-        draw_airplane_instance(-2, 0, 0, yaw1, pitch1, roll1)
-        draw_airplane_instance(2, 0, 0, yaw2, pitch2, roll2)
+        for i in range(num_mpus):
+            draw_airplane_instance(*positions[i], *filtered_values[i])
         
         pygame.display.flip()
     
